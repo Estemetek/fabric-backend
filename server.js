@@ -1,10 +1,18 @@
 const express = require("express");
+const cors = require("cors");   // <-- import cors
 const { Gateway, Wallets } = require("fabric-network");
 const path = require("path");
 const fs = require("fs");
 
 const app = express();
 app.use(express.json());
+
+// allow Ionic frontend to connect
+app.use(cors({
+  origin: ["http://localhost:8100"],  // Ionic dev server
+  methods: ["GET", "POST", "PUT", "DELETE"],
+  credentials: true
+}));
 
 // Hyperledger Fabric connection variables
 const channelName = "mychannel";
@@ -116,8 +124,15 @@ app.post("/api/donations", async (req, res) => {
 
 
 // Start server after initializing Fabric
+// const PORT = 3000;
+// app.listen(PORT, async () => {
+//   console.log(`🚀 Backend listening on http://localhost:${PORT}`);
+//   await initFabric();
+// });
 const PORT = 3000;
-app.listen(PORT, async () => {
-  console.log(`🚀 Backend listening on http://localhost:${PORT}`);
+app.listen(PORT, "0.0.0.0", async () => {
+  console.log(`🚀 Backend listening on http://192.168.254.106:${PORT}`);
   await initFabric();
 });
+
+
