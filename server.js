@@ -1,5 +1,6 @@
 const express = require("express");
 const cors = require("cors");   // <-- import cors
+const mongoose = require("mongoose");   // <-- import mongoose
 const { Gateway, Wallets } = require("fabric-network");
 const path = require("path");
 const fs = require("fs");
@@ -13,6 +14,24 @@ app.use(cors({
   methods: ["GET", "POST", "PUT", "DELETE"],
   credentials: true
 }));
+
+// ✅ Connect to MongoDB
+mongoose.connect("mongodb://127.0.0.1:27017/donationsDB")
+.then(() => console.log("✅ Connected to MongoDB"))
+.catch((err) => console.error("❌ MongoDB connection error:", err));
+
+// Example: Donation schema (can be moved to /models/Donation.js)
+const donationSchema = new mongoose.Schema({
+  ID: { type: String, required: true, unique: true },
+  Color: String,
+  Size: Number,
+  Owner: String,
+  AppraisedValue: Number,
+  timestamp: { type: Date, default: Date.now }
+});
+
+// Create model
+const Donation = mongoose.model("Donation", donationSchema);
 
 // Hyperledger Fabric connection variables
 const channelName = "mychannel";
@@ -50,15 +69,6 @@ async function initFabric() {
   }
 }
 
-// Example route: GET all donations
-// app.get("/api/donations", async (req, res) => {
-//   try {
-//     const result = await contract.evaluateTransaction("GetAllAssets"); // your chaincode function
-//     res.json(JSON.parse(result.toString()));
-//   } catch (err) {
-//     res.status(500).send(err.message);
-//   }
-// });
 
 app.get("/api/donations", async (req, res) => {
   try {
@@ -72,17 +82,17 @@ app.get("/api/donations", async (req, res) => {
   }
 });
 
-
-// Example route: POST a new donation
-// app.post("/api/donations", async (req, res) => {
+// // GET all donations - with MongoDB
+// app.get("/api/donations", async (req, res) => {
 //   try {
-//     const { id, value } = req.body;
-//     await contract.submitTransaction("CreateAsset", id, value); // your chaincode function
-//     res.json({ success: true, id, value });
+//     const donations = await Donation.find().sort({ createdAt: -1 });
+//     res.json(donations);
 //   } catch (err) {
-//     res.status(500).send(err.message);
+//     console.error(err);
+//     res.status(500).json({ error: err.message });
 //   }
 // });
+
 
 // POST a new donation
 app.post("/api/donations", async (req, res) => {
@@ -118,8 +128,39 @@ app.post("/api/donations", async (req, res) => {
   }
 });
 
+// //POST donation - with MongoDB
+// app.post("/api/donations", async (req, res) => {
+//   try {
+//     const { ID, Color, Size, Owner, AppraisedValue } = req.body;
 
+//     if (!ID || !Color || !Size || !Owner || !AppraisedValue) {
+//       return res.status(400).json({ error: "Missing fields in request body" });
+//     }
 
+//     // Save to Fabric (on-chain record)
+//     await contract.submitTransaction(
+//       "CreateAsset",
+//       ID,
+//       Color,
+//       Size.toString(),
+//       Owner,
+//       AppraisedValue.toString()
+//     );
+
+//     // Save to MongoDB (off-chain details)
+//     const donation = new Donation({ ID, Color, Size, Owner, AppraisedValue });
+//     await donation.save();
+
+//     res.json({
+//       message: `Donation ${ID} created successfully`,
+//       asset: donation,
+//     });
+
+//   } catch (err) {
+//     console.error(err);
+//     res.status(500).json({ error: err.message });
+//   }
+// });
 
 
 
