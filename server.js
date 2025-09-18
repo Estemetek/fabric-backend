@@ -1,51 +1,71 @@
-const express = require("express");
-const cors = require("cors");   // <-- import cors
-const mongoose = require("mongoose");   // <-- import mongoose
-const { Gateway, Wallets } = require("fabric-network");
-const path = require("path");
-const fs = require("fs");
+// ------------------- Imports -------------------
+import express from "express";
+import cors from "cors";
+import mongoose from "mongoose";
+import bcrypt from "bcryptjs";
+import jwt from "jsonwebtoken";
+import { Gateway, Wallets } from "fabric-network";
+import path from "path";
+import fs from "fs";
+import { v4 as uuidv4 } from "uuid";
+import { fileURLToPath } from "url";
 
+import userRoutes from "./routes/userRoutes.js";
+
+// ------------------- Fix __dirname for ESM -------------------
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// ------------------- Express Setup -------------------
 const app = express();
 app.use(express.json());
 
-// allow Ionic frontend to connect
-app.use(cors({
-  origin: ["http://localhost:8100"],  // Ionic dev server
-  methods: ["GET", "POST", "PUT", "DELETE"],
-  credentials: true
-}));
+app.use(
+  cors({
+    origin: ["http://localhost:8100", "http://192.168.254.106:8100"],
+    methods: ["GET", "POST", "PUT", "DELETE"],
+    credentials: true,
+  })
+);
 
-// ✅ Connect to MongoDB
-mongoose.connect("mongodb://127.0.0.1:27017/donationsDB")
-.then(() => console.log("✅ Connected to MongoDB"))
-.catch((err) => console.error("❌ MongoDB connection error:", err));
+// ------------------- MongoDB Connection -------------------
+mongoose
+  .connect("mongodb://127.0.0.1:27017/donationsDB")
+  .then(() => console.log("✅ Connected to MongoDB"))
+  .catch((err) => console.error("❌ MongoDB connection error:", err));
 
-// Example: Donation schema (can be moved to /models/Donation.js)
-const donationSchema = new mongoose.Schema({
-  ID: { type: String, required: true, unique: true },
-  Color: String,
-  Size: Number,
-  Owner: String,
-  AppraisedValue: Number,
-  timestamp: { type: Date, default: Date.now }
+// ------------------- MongoDB Schemas -------------------
+const donationOffchainSchema = new mongoose.Schema({
+  itemID: { type: String, required: true, unique: true },
+  itemType: { type: String, required: true },
+  category: { type: String },
+  condition: { type: String },
+  quantity: { type: Number, default: 1 },
+  donorInfo: {
+    name: String,
+    email: String,
+    contactNo: String,
+  },
+  recipientInfo: {
+    school: String,
+    contact: String,
+  },
+  images: { type: [String], default: [] },
+  notes: String,
+  appraisalValue: Number,
+  createdAt: { type: Date, default: Date.now },
 });
 
-// Create model
-const Donation = mongoose.model("Donation", donationSchema);
+const Donation = mongoose.model("Donation", donationOffchainSchema);
 
-// Hyperledger Fabric connection variables
+// ------------------- Hyperledger Fabric Setup -------------------
 const channelName = "mychannel";
 const chaincodeName = "basic";
-const mspId = "Org1MSP";
-const walletPath = path.join(__dirname, "wallet"); // store identities here
-// const ccpPath = path.resolve(__dirname, "connections", "connection-org1.json"); // <-- updated
+const walletPath = path.join(__dirname, "wallet");
 const ccpPath = path.join(__dirname, "connection-org1.json");
-
-
 
 let contract;
 
-// connect to Fabric before starting API
 async function initFabric() {
   try {
     const ccp = JSON.parse(fs.readFileSync(ccpPath, "utf8"));
@@ -54,7 +74,7 @@ async function initFabric() {
     const gateway = new Gateway();
     await gateway.connect(ccp, {
       wallet,
-      identity: "appUser", // make sure 'appUser' exists in wallet
+      identity: "appUser",
       discovery: { enabled: true, asLocalhost: true },
     });
 
@@ -69,111 +89,150 @@ async function initFabric() {
   }
 }
 
+// ------------------- API Routes -------------------
 
+// 📌 Get all donations (Blockchain only)
 app.get("/api/donations", async (req, res) => {
   try {
     const result = await contract.evaluateTransaction("GetAllAssets");
-    // result may be empty, so we provide a default empty array
-    const assets = result.length ? JSON.parse(result.toString()) : [];
+    let assets = result.length ? JSON.parse(result.toString()) : [];
+
+    assets = assets.filter((asset) => asset.itemID && asset.itemID.trim() !== "");
+
     res.json(assets);
   } catch (err) {
-    console.error(err);
+    console.error("❌ Error fetching donations:", err);
     res.status(500).json({ error: err.message });
   }
 });
 
-// // GET all donations - with MongoDB
-// app.get("/api/donations", async (req, res) => {
-//   try {
-//     const donations = await Donation.find().sort({ createdAt: -1 });
-//     res.json(donations);
-//   } catch (err) {
-//     console.error(err);
-//     res.status(500).json({ error: err.message });
-//   }
-// });
-
-
-// POST a new donation
+// 📌 Create a new donation (Blockchain + MongoDB)
 app.post("/api/donations", async (req, res) => {
   try {
-    const { ID, Color, Size, Owner, AppraisedValue } = req.body;
+    const {
+      itemType,
+      category,
+      condition,
+      quantity,
+      donorID,
+      currentOwner,
+      status,
+      donorInfo,
+      recipientInfo,
+      notes,
+      images,
+      appraisalValue,
+    } = req.body;
 
-    if (!ID || !Color || !Size || !Owner || !AppraisedValue) {
-      return res.status(400).json({ error: "Missing fields in request body" });
+    const itemID = "donation-" + uuidv4();
+
+    if (!itemType || !condition || !donorID || !currentOwner || !status) {
+      return res.status(400).json({ error: "Missing required fields" });
     }
 
-    // Submit CreateAsset transaction
+    const timestamp = new Date().toISOString();
+
+    // --- On-chain ---
     await contract.submitTransaction(
       "CreateAsset",
-      ID,
-      Color,
-      Size.toString(),
-      Owner,
-      AppraisedValue.toString()
+      itemID,
+      itemType,
+      condition,
+      donorID,
+      currentOwner,
+      status,
+      timestamp
     );
 
-    // Read the asset back to return in response
-    const result = await contract.evaluateTransaction("ReadAsset", ID);
-    const assetResult = result && result.length ? JSON.parse(result.toString()) : null;
+    const result = await contract.evaluateTransaction("ReadAsset", itemID);
+    const asset = result.length ? JSON.parse(result.toString()) : null;
 
-    res.json({
-      message: `Donation ${ID} created successfully`,
-      asset: assetResult
+    // --- Off-chain ---
+    const newDonation = new Donation({
+      itemID,
+      itemType,
+      category,
+      condition,
+      quantity,
+      donorInfo,
+      recipientInfo,
+      images,
+      notes,
+      appraisalValue,
     });
 
+    await newDonation.save();
+
+    res.status(201).json({
+      message: `✅ Donation ${itemID} created successfully (on-chain + off-chain)`,
+      blockchain: asset,
+      offchain: newDonation,
+    });
   } catch (err) {
-    console.error(err);
+    console.error("❌ Error creating donation:", err);
     res.status(500).json({ error: err.message });
   }
 });
 
-// //POST donation - with MongoDB
-// app.post("/api/donations", async (req, res) => {
-//   try {
-//     const { ID, Color, Size, Owner, AppraisedValue } = req.body;
+// 📌 Update donation status (Blockchain only)
+app.post("/api/donations/:id/status", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status } = req.body;
 
-//     if (!ID || !Color || !Size || !Owner || !AppraisedValue) {
-//       return res.status(400).json({ error: "Missing fields in request body" });
-//     }
+    if (!status) return res.status(400).json({ error: "Missing status" });
 
-//     // Save to Fabric (on-chain record)
-//     await contract.submitTransaction(
-//       "CreateAsset",
-//       ID,
-//       Color,
-//       Size.toString(),
-//       Owner,
-//       AppraisedValue.toString()
-//     );
+    const timestamp = new Date().toISOString();
 
-//     // Save to MongoDB (off-chain details)
-//     const donation = new Donation({ ID, Color, Size, Owner, AppraisedValue });
-//     await donation.save();
+    await contract.submitTransaction("UpdateStatus", id, status, timestamp);
 
-//     res.json({
-//       message: `Donation ${ID} created successfully`,
-//       asset: donation,
-//     });
+    const result = await contract.evaluateTransaction("ReadAsset", id);
+    const asset = result.length ? JSON.parse(result.toString()) : null;
 
-//   } catch (err) {
-//     console.error(err);
-//     res.status(500).json({ error: err.message });
-//   }
-// });
-
-
-
-// Start server after initializing Fabric
-// const PORT = 3000;
-// app.listen(PORT, async () => {
-//   console.log(`🚀 Backend listening on http://localhost:${PORT}`);
-//   await initFabric();
-// });
-const PORT = 3000;
-app.listen(PORT, "0.0.0.0", async () => {
-  console.log(`🚀 Backend listening on http://192.168.254.106:${PORT}`);
-  await initFabric();
+    res.json({ message: `✅ Donation ${id} status updated on blockchain`, asset });
+  } catch (err) {
+    console.error("❌ Error updating status:", err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
+// 📌 Get single donation (Blockchain + MongoDB merged)
+app.get("/api/donations/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
 
+    // --- Blockchain ---
+    let blockchainData = null;
+    try {
+      const result = await contract.evaluateTransaction("ReadAsset", id);
+      blockchainData = result.length ? JSON.parse(result.toString()) : null;
+    } catch (e) {
+      console.warn("⚠️ Blockchain record not found for", id);
+    }
+
+    // --- Off-chain (MongoDB) ---
+    const offchainData = await Donation.findOne({ itemID: id });
+
+    if (!blockchainData && !offchainData) {
+      return res.status(404).json({ error: `Donation ${id} not found` });
+    }
+
+    res.json({
+      blockchain: blockchainData || {},
+      offchain: offchainData || {},
+    });
+  } catch (err) {
+    console.error("❌ Error fetching donation details:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Use modular routes
+app.use("/api/users", userRoutes);
+
+// ------------------- Start Server -------------------
+const PORT = 3000;
+app.listen(PORT, "0.0.0.0", async () => {
+  console.log(`🚀 Backend listening on http://0.0.0.0:${PORT}`);
+  await initFabric();
+});
